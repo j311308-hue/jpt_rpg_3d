@@ -106,16 +106,50 @@ class ActionBar:
             {"key": pygame.K_5, "label": "5", "name": "Empty", "icon": None, "cd": 0, "max_cd": 10, "type": "none", "cost": 0},
             {"key": pygame.K_6, "label": "6", "name": "Empty", "icon": None, "cd": 0, "max_cd": 10, "type": "none", "cost": 0}
         ]
+        # Floating toolbar position and dragging
+        self.x = WIDTH // 2 - ((len(self.slots) * self.slot_size) + ((len(self.slots) - 1) * self.spacing)) // 2
+        self.y = HEIGHT - self.slot_size - 20
+        self.dragging = False
+        self.drag_offset = (0, 0)
 
     def update(self):
         for slot in self.slots:
             if slot["cd"] > 0: slot["cd"] -= 1
 
+    def get_rect(self):
+        """Get bounding rectangle of action bar"""
+        total_width = (len(self.slots) * self.slot_size) + ((len(self.slots) - 1) * self.spacing)
+        return pygame.Rect(self.x, self.y, total_width, self.slot_size)
+
+    def start_drag(self, mouse_pos):
+        """Start dragging the action bar"""
+        rect = self.get_rect()
+        if rect.collidepoint(mouse_pos):
+            self.dragging = True
+            self.drag_offset = (mouse_pos[0] - self.x, mouse_pos[1] - self.y)
+
+    def update_drag(self, mouse_pos):
+        """Update action bar position during drag"""
+        if self.dragging:
+            self.x = mouse_pos[0] - self.drag_offset[0]
+            self.y = mouse_pos[1] - self.drag_offset[1]
+
+    def stop_drag(self):
+        """Stop dragging"""
+        self.dragging = False
+
     def draw(self, screen):
         total_width = (len(self.slots) * self.slot_size) + ((len(self.slots) - 1) * self.spacing)
-        start_x = (WIDTH // 2) - (total_width // 2)
-        start_y = HEIGHT - self.slot_size - 20 
+        start_x = self.x
+        start_y = self.y
         font = pygame.font.SysFont("georgia", 14, bold=True)
+
+        # Draw background panel
+        panel_rect = pygame.Rect(start_x - 5, start_y - 5, total_width + 10, self.slot_size + 10)
+        s = pygame.Surface((panel_rect.width, panel_rect.height), pygame.SRCALPHA)
+        s.fill((40, 30, 20, 200))
+        screen.blit(s, panel_rect.topleft)
+        pygame.draw.rect(screen, (200, 180, 100), panel_rect, 2)
 
         for i, slot in enumerate(self.slots):
             x = start_x + (i * (self.slot_size + self.spacing))
@@ -141,14 +175,38 @@ class Inventory:
     def __init__(self, icons_dict):
         self.slots = [None] * 16 
         self.visible = False
-        self.rect = pygame.Rect(0, 0, 340, 340) 
+        # Floating inventory position (top-right by default)
+        self.rect = pygame.Rect(WIDTH - 360, 50, 340, 340)
         self.icons = icons_dict
         self.cols, self.rows = 4, 4
         self.slot_size, self.margin = 60, 15
+        self.dragging = False
+        self.drag_offset = (0, 0)
         
     def toggle(self):
         self.visible = not self.visible
-            
+    
+    def start_drag(self, mouse_pos):
+        """Start dragging the inventory"""
+        # Only drag from title bar area (top 30 pixels)
+        title_bar = pygame.Rect(self.rect.x, self.rect.y, self.rect.width, 30)
+        if title_bar.collidepoint(mouse_pos):
+            self.dragging = True
+            self.drag_offset = (mouse_pos[0] - self.rect.x, mouse_pos[1] - self.rect.y)
+    
+    def update_drag(self, mouse_pos):
+        """Update inventory position during drag"""
+        if self.dragging:
+            self.rect.x = mouse_pos[0] - self.drag_offset[0]
+            self.rect.y = mouse_pos[1] - self.drag_offset[1]
+            # Keep within screen bounds
+            self.rect.x = max(0, min(self.rect.x, WIDTH - self.rect.width))
+            self.rect.y = max(0, min(self.rect.y, HEIGHT - self.rect.height))
+    
+    def stop_drag(self):
+        """Stop dragging"""
+        self.dragging = False
+                
     def add_item(self, name, qty, item_type, desc):
         for slot in self.slots:
             if slot and slot["name"] == name and slot["type"] not in ["weapon", "artifact"]:
@@ -162,14 +220,19 @@ class Inventory:
 
     def draw(self, screen):
         if not self.visible: return
-        sw, sh = screen.get_size()
-        self.rect.center = (sw//2, sh//2 - 40)
         
+        # Draw semi-transparent background
         s = pygame.Surface((self.rect.width, self.rect.height), pygame.SRCALPHA)
         s.fill((30, 30, 35, 230))
         screen.blit(s, (self.rect.x, self.rect.y))
         pygame.draw.rect(screen, (200, 180, 100), self.rect, 3)
+        
         font = pygame.font.SysFont("georgia", 12, bold=True)
+        title_font = pygame.font.SysFont("georgia", 14, bold=True)
+        
+        # Draw title bar
+        title_text = title_font.render("INVENTORY", True, (200, 180, 100))
+        screen.blit(title_text, (self.rect.x + 10, self.rect.y + 8))
         
         for i in range(16):
             row, col = i // self.cols, i % self.cols
@@ -664,8 +727,20 @@ class Game:
                     return
                 elif e.type == pygame.KEYDOWN and (e.key == pygame.K_i or e.key == pygame.K_TAB):
                     self.inventory.toggle()
+                elif e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
+                    # Check if clicking on inventory or action bar to drag
+                    if self.inventory.visible:
+                        self.inventory.start_drag(e.pos)
+                    self.action_bar.start_drag(e.pos)
+                elif e.type == pygame.MOUSEBUTTONUP and e.button == 1:
+                    self.inventory.stop_drag()
+                    self.action_bar.stop_drag()
+                elif e.type == pygame.MOUSEMOTION:
+                    # Update drag positions
+                    self.inventory.update_drag(e.pos)
+                    self.action_bar.update_drag(e.pos)
 
-            if not self.inventory.visible:
+            if not self.inventory.visible and not self.action_bar.dragging:
                 keys = pygame.key.get_pressed()
                 ms = PLAYER_SPEED * dt
                 dx, dy = 0, 0
