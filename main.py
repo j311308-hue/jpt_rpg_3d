@@ -316,24 +316,47 @@ class MapEditor:
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("georgia", 12)
         self.font_large = pygame.font.SysFont("georgia", 16, bold=True)
+        self.font_msg = pygame.font.SysFont("georgia", 14, bold=True)
         self.map = [[TileType.EMPTY.value for _ in range(MAP_SIZE)] for _ in range(MAP_SIZE)]
         self.active_tile, self.camera_x, self.camera_y, self.zoom = TileType.WALL_BRICK.value, self.left_panel_w + 50, 50, 1.0
+        self.save_message = ""
+        self.save_message_timer = 0
         self.load_map()
 
     def load_map(self):
         if os.path.exists(MAP_DATA_FILE):
             try:
-                with open(MAP_DATA_FILE, "r") as f: self.map = json.load(f).get("map", self.map)
-            except: pass
+                with open(MAP_DATA_FILE, "r") as f:
+                    data = json.load(f)
+                    if "map" in data:
+                        map_data = data["map"]
+                        # Validate dimensions
+                        if len(map_data) == MAP_SIZE and all(len(row) == MAP_SIZE for row in map_data):
+                            self.map = map_data
+                            print(f"✓ Map loaded successfully from {MAP_DATA_FILE}")
+                        else:
+                            print(f"✗ Map size mismatch! Expected {MAP_SIZE}x{MAP_SIZE}, got {len(map_data)}x{len(map_data[0]) if map_data else 0}")
+            except Exception as e:
+                print(f"✗ Failed to load map: {e}")
 
     def run(self):
         mouse_down, is_panning, p_start_m, p_start_c = False, False, (0,0), (0,0)
         while True:
             pos = pygame.mouse.get_pos()
             for e in pygame.event.get():
-                if e.type == pygame.QUIT or (e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE): return
+                if e.type == pygame.QUIT or (e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE): 
+                    return
                 elif e.type == pygame.KEYDOWN and e.key == pygame.K_s:
-                    with open(MAP_DATA_FILE, "w") as f: json.dump({"map": self.map}, f)
+                    try:
+                        with open(MAP_DATA_FILE, "w") as f: 
+                            json.dump({"map": self.map, "size": MAP_SIZE}, f, indent=2)
+                        print(f"✓ Map saved successfully to {MAP_DATA_FILE}")
+                        self.save_message = "Map Saved!"
+                        self.save_message_timer = 120
+                    except Exception as e:
+                        print(f"✗ Failed to save map: {e}")
+                        self.save_message = "Save Failed!"
+                        self.save_message_timer = 120
                 elif e.type == pygame.MOUSEBUTTONDOWN:
                     if e.button == 1: 
                         mouse_down = True
@@ -373,6 +396,18 @@ class MapEditor:
                 c = (255, 255, 0) if self.active_tile == item.value else (200, 200, 200)
                 self.screen.blit(self.font.render(f"{item.name} ({item.value})", True, c), (self.editor_width - self.right_panel_w + 10, y_off))
                 y_off += 20
+            
+            # Draw save message
+            if self.save_message_timer > 0:
+                self.save_message_timer -= 1
+                msg_color = (100, 255, 100) if "Saved" in self.save_message else (255, 100, 100)
+                msg_surf = self.font_msg.render(self.save_message, True, msg_color)
+                self.screen.blit(msg_surf, (self.editor_width // 2 - msg_surf.get_width() // 2, self.editor_height - 40))
+            
+            # Draw instructions
+            instr_surf = self.font.render("Press S to Save | ESC to Exit", True, (150, 150, 150))
+            self.screen.blit(instr_surf, (10, self.editor_height - 25))
+            
             pygame.display.flip()
             self.clock.tick(FPS)
 
@@ -425,8 +460,16 @@ class Game:
             if os.path.exists(MAP_DATA_FILE):
                 with open(MAP_DATA_FILE, "r") as f:
                     data = json.load(f)
-                    if "map" in data: default_map = data["map"]
-        except: pass
+                    if "map" in data:
+                        map_data = data["map"]
+                        # Validate dimensions BEFORE using
+                        if len(map_data) == MAP_SIZE and all(len(row) == MAP_SIZE for row in map_data):
+                            default_map = map_data
+                            print(f"✓ Map loaded successfully from {MAP_DATA_FILE}")
+                        else:
+                            print(f"✗ Map data size mismatch! Expected {MAP_SIZE}x{MAP_SIZE}, got {len(map_data)}x{len(map_data[0]) if map_data else 0}. Using default map.")
+        except Exception as e:
+            print(f"✗ Failed to load map: {e}. Using default map.")
         
         # Extract Spawn & Sprites from map
         for y in range(MAP_SIZE):
