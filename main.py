@@ -60,6 +60,7 @@ SPRITE_BUSH = load_image_safe("bush.png", alpha=True)
 SPRITE_BUSH2 = load_image_safe("bush_2.png", alpha=True)
 SPRITE_BOSS_IDLE = load_image_safe("boss_idle.png", alpha=True)
 SPRITE_BOSS_ATTACK = load_image_safe("boss_attack.png", alpha=True)
+SPRITE_FIREBALL = load_image_safe("fireball.png", alpha=True)
 ICON_ARTIFACT = load_image_safe("artifact.png", alpha=True)
 BG_MENU = load_image_safe("1780692702140.png")
 
@@ -80,6 +81,14 @@ def play_music(music_type="bgm"):
             pygame.mixer.music.set_volume(0.5)
             pygame.mixer.music.play(-1)
         except: pass
+
+# Import new systems
+try:
+    from asset_manager import get_asset_manager
+    from combat_system import CombatSystem, Enemy
+    from stat_system import StatAllocator
+except ImportError as e:
+    print(f"Warning: Could not import new systems: {e}")
 
 # ==========================================
 #               UI & INVENTORY
@@ -229,7 +238,7 @@ class BossDesigner:
                     self.message = "Boss Saved!"
                     self.message_timer = 120
                 elif act == "exit":
-                    play_music("bgm") # Switch back to menu music
+                    play_music("bgm")
                     return True
         return False
 
@@ -261,12 +270,10 @@ class BossDesigner:
             txt_surf = self.font.render(btn["label"], True, (255, 255, 255))
             self.screen.blit(txt_surf, (btn["rect"].centerx - txt_surf.get_width()//2, btn["rect"].centery - txt_surf.get_height()//2))
 
-        # Dynamic Boss Preview Map
         preview_rect = pygame.Rect(WIDTH - 380, 120, 300, 300)
         pygame.draw.rect(self.screen, (30, 30, 40), preview_rect)
         pygame.draw.rect(self.screen, (100, 100, 150), preview_rect, 2)
         
-        # Animate sprite slightly
         active_sprite = SPRITE_BOSS_ATTACK if pygame.time.get_ticks() % 1000 > 500 and SPRITE_BOSS_ATTACK else SPRITE_BOSS_IDLE
         if active_sprite:
             scale = self.boss_data["scale"]
@@ -286,7 +293,7 @@ class BossDesigner:
         pygame.display.flip()
 
     def run(self):
-        play_music("boss") # Play epic track in designer!
+        play_music("boss")
         while True:
             for e in pygame.event.get():
                 if e.type == pygame.QUIT: return
@@ -302,7 +309,6 @@ class BossDesigner:
 #               MAP EDITOR
 # ==========================================
 class MapEditor:
-    # Kept identical logic but shortened structurally for space
     def __init__(self):
         self.base_cell_size, self.editor_width, self.editor_height, self.left_panel_w, self.right_panel_w = 24, 1200, 800, 200, 260
         self.screen = pygame.display.set_mode((self.editor_width, self.editor_height))
@@ -374,22 +380,35 @@ class MapEditor:
 #               GAME ENGINE
 # ==========================================
 class Game:
-    def __init__(self):
+    def __init__(self, stats=None):
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption("RPGW3D - Engine")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("georgia", 18, bold=True)
+        self.font_small = pygame.font.SysFont("georgia", 14)
+        
+        # Initialize combat system with custom or default stats
+        if stats:
+            self.combat = CombatSystem(stats["strength"], stats["intelligence"], stats["endurance"])
+        else:
+            self.combat = CombatSystem()
         
         # Load Inventory Assets
         icons = {"ancient artifact": ICON_ARTIFACT}
         self.inventory = Inventory(icons)
-        self.inventory.add_item("Ancient Artifact", 1, "artifact", "A glowing relict of power") # Added as demo
+        self.inventory.add_item("Ancient Artifact", 1, "artifact", "A glowing relict of power")
         self.action_bar = ActionBar(icons)
         
-        self.health, self.max_health = 100, 100
-        self.mana, self.max_mana = 50, 50
+        self.health = self.combat.max_health
+        self.max_health = self.combat.max_health
+        self.mana = self.combat.max_mana
+        self.max_mana = self.combat.max_mana
+        
         self.px, self.py, self.p_angle = 2.5, 2.5, 0.0
         self.show_stat_screen = False
+        
+        # Enemy management
+        self.enemies = []
         
         # Load Map & Sprites
         self.sprites = []
@@ -420,7 +439,7 @@ class Game:
                     self.sprites.append({"type": "bush", "x": x + 0.5, "y": y + 0.5, "var": random.randint(1,2)})
                     default_map[y][x] = 0
                 elif val == TileType.ENEMY_GHOST.value:
-                    self.sprites.append({"type": "boss", "x": x + 0.5, "y": y + 0.5})
+                    self.enemies.append(Enemy(x + 0.5, y + 0.5, "ghost"))
                     default_map[y][x] = 0
         return default_map
 
@@ -449,7 +468,6 @@ class Game:
                 else: hit_wall = True
                     
             if hit_wall:
-                # Correct fish-eye & Set Z-Buffer
                 dist *= math.cos(self.p_angle - ray_angle)
                 dist = max(0.1, dist)
                 self.z_buffer[ray] = dist
@@ -460,9 +478,7 @@ class Game:
                 ray_x = ray * (WIDTH // NUM_RAYS)
                 ray_y = (HEIGHT // 2) - (wall_h // 2)
                 
-                # Textured Wall Rendering (If Brick Wall & Texture Loaded)
                 if TEX_BRICK and wall_type == TileType.WALL_BRICK.value:
-                    # Determine exact collision point for texture mapping
                     diff_x = min(cx - math.floor(cx), math.ceil(cx) - cx)
                     diff_y = min(cy - math.floor(cy), math.ceil(cy) - cy)
                     tex_x = int((cy - math.floor(cy)) * tex_width) if diff_x < diff_y else int((cx - math.floor(cx)) * tex_width)
@@ -472,21 +488,18 @@ class Game:
                     strip_scaled = pygame.transform.scale(strip, (ray_w, int(wall_h)))
                     self.screen.blit(strip_scaled, (ray_x, ray_y))
                     
-                    # Apply depth shading overlay
                     shade = max(0, min(255, int(dist * 12)))
                     if shade > 0:
                         s = pygame.Surface((ray_w, int(wall_h)))
                         s.set_alpha(shade)
                         self.screen.blit(s, (ray_x, ray_y))
                 else:
-                    # Flat color fallback
                     color = (100, 100, 100) if wall_type == 2 else (139, 100, 50) if wall_type == 3 else (180, 50, 50)
                     shade = max(0, min(255, 255 - int(dist * 12)))
                     shaded_color = (min(color[0], shade), min(color[1], shade), min(color[2], shade))
                     pygame.draw.rect(self.screen, shaded_color, pygame.Rect(ray_x, ray_y, ray_w, wall_h))
 
     def draw_sprites(self):
-        # Sort by distance (Painter's Algorithm)
         self.sprites.sort(key=lambda s: (self.px - s["x"])**2 + (self.py - s["y"])**2, reverse=True)
         
         for sprite in self.sprites:
@@ -498,7 +511,7 @@ class Game:
             while angle < -math.pi: angle += 2 * math.pi
             while angle > math.pi: angle -= 2 * math.pi
             
-            if abs(angle) < FOV / 2 + 0.5: # Include margin for sprite width
+            if abs(angle) < FOV / 2 + 0.5:
                 screen_x = int((0.5 * (angle / (FOV / 2)) + 0.5) * WIDTH)
                 sprite_h = min(HEIGHT * 2, int(WALL_HEIGHT_MULTIPLIER / dist))
                 sprite_w = sprite_h
@@ -510,20 +523,89 @@ class Game:
                     img = SPRITE_BOSS_IDLE
                 
                 if img:
-                    # Depth testing against center ray
                     ray_index = int(screen_x / (WIDTH / NUM_RAYS))
                     if 0 <= ray_index < NUM_RAYS and dist < self.z_buffer[ray_index]:
                         scaled = pygame.transform.scale(img, (sprite_w, sprite_h))
                         self.screen.blit(scaled, (screen_x - sprite_w // 2, (HEIGHT // 2) - (sprite_h // 2)))
 
+    def draw_projectiles(self):
+        """Draw active projectiles in 3D space"""
+        for proj in self.combat.active_projectiles:
+            dx, dy = proj.x - self.px, proj.y - self.py
+            dist = math.sqrt(dx**2 + dy**2)
+            if dist < 0.2: continue
+            
+            angle = math.atan2(dy, dx) - self.p_angle
+            while angle < -math.pi: angle += 2 * math.pi
+            while angle > math.pi: angle -= 2 * math.pi
+            
+            if abs(angle) < FOV / 2 + 0.5:
+                screen_x = int((0.5 * (angle / (FOV / 2)) + 0.5) * WIDTH)
+                proj_h = min(HEIGHT, int(800 / dist))
+                proj_w = proj_h // 2
+                
+                # Draw fireball as orange circle
+                ray_index = int(screen_x / (WIDTH / NUM_RAYS))
+                if 0 <= ray_index < NUM_RAYS and dist < self.z_buffer[ray_index]:
+                    pygame.draw.circle(self.screen, (255, 150, 50), 
+                                     (screen_x, int((HEIGHT // 2))), 
+                                     max(3, int(proj_h // 4)))
+
     def draw_hud(self):
         bar_w, bar_h = 200, 20
+        
+        # Health bar
         pygame.draw.rect(self.screen, (50, 0, 0), (20, 20, bar_w, bar_h))
         pygame.draw.rect(self.screen, (255, 50, 50), (20, 20, bar_w * (self.health / self.max_health), bar_h))
         pygame.draw.rect(self.screen, (255, 255, 255), (20, 20, bar_w, bar_h), 2)
         
+        health_text = self.font_small.render(f"HP: {int(self.health)}/{int(self.max_health)}", True, (255, 255, 255))
+        self.screen.blit(health_text, (30, 25))
+        
+        # Mana bar
+        pygame.draw.rect(self.screen, (0, 0, 50), (20, 50, bar_w, bar_h))
+        pygame.draw.rect(self.screen, (50, 100, 255), (20, 50, bar_w * (self.mana / self.max_mana), bar_h))
+        pygame.draw.rect(self.screen, (255, 255, 255), (20, 50, bar_w, bar_h), 2)
+        
+        mana_text = self.font_small.render(f"Mana: {int(self.mana)}/{int(self.max_mana)}", True, (255, 255, 255))
+        self.screen.blit(mana_text, (30, 55))
+        
         self.action_bar.draw(self.screen)
         self.inventory.draw(self.screen)
+
+    def handle_spell_casting(self):
+        """Handle keyboard input for spell casting"""
+        keys = pygame.key.get_pressed()
+        
+        if keys[pygame.K_2]:  # Fireball
+            success, proj, mana_used = self.combat.cast_spell("fireball", self.px, self.py, self.p_angle, self.mana)
+            if success:
+                self.mana -= mana_used
+                self.mana = max(0, self.mana)
+        
+        if keys[pygame.K_3]:  # Heal
+            success, _, mana_used = self.combat.cast_spell("heal", self.px, self.py, self.p_angle, self.mana)
+            if success:
+                self.mana -= mana_used
+                self.health = min(self.max_health, self.health + self.combat.spells["heal"].heal_amount)
+                self.mana = max(0, self.mana)
+
+    def update_enemies(self):
+        """Update all enemies and check for player collisions"""
+        for enemy in self.enemies[:]:
+            if not enemy.alive:
+                self.enemies.remove(enemy)
+                continue
+            
+            enemy.update(self.px, self.py)
+            
+            # Check for projectile collisions
+            for proj in self.combat.active_projectiles:
+                if proj.check_collision(enemy.x, enemy.y):
+                    if enemy.take_damage(proj.damage):
+                        proj.alive = False
+                    else:
+                        proj.alive = False
 
     def run(self):
         play_music("bgm")
@@ -556,8 +638,16 @@ class Game:
                 self.p_angle += mx * 0.002
 
             self.action_bar.update()
+            self.combat.update()
+            self.update_enemies()
+            self.handle_spell_casting()
+            
+            # Regenerate mana slowly
+            self.mana = min(self.max_mana, self.mana + 0.1)
+            
             self.draw_raycast()
             self.draw_sprites()
+            self.draw_projectiles()
             self.draw_hud()
             pygame.display.flip()
 
@@ -581,7 +671,6 @@ def show_main_menu():
     while True:
         pygame.mouse.set_visible(True)
         
-        # New Feature: Draw loaded background image!
         if BG_MENU: screen.blit(pygame.transform.scale(BG_MENU, (WIDTH, HEIGHT)), (0, 0))
         else: screen.fill((20, 20, 30))
         
@@ -590,7 +679,7 @@ def show_main_menu():
             if e.type == pygame.QUIT: sys.exit()
             if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
                 if rect_play.collidepoint(e.pos):
-                    Game().run()
+                    show_stat_screen()
                     screen = pygame.display.set_mode((WIDTH, HEIGHT))
                 elif rect_editor.collidepoint(e.pos):
                     MapEditor().run()
@@ -602,7 +691,6 @@ def show_main_menu():
                     sys.exit()
 
         title = font_large.render("JPT RPG 3D", True, (255, 200, 100))
-        # Add slight shadow to title so it's readable over the background
         shadow = font_large.render("JPT RPG 3D", True, (0, 0, 0))
         screen.blit(shadow, (WIDTH//2 - title.get_width()//2 + 2, 120 + 2))
         screen.blit(title, (WIDTH//2 - title.get_width()//2, 120))
@@ -623,6 +711,37 @@ def show_main_menu():
 
         pygame.display.flip()
         clock.tick(60)
+
+def show_stat_screen():
+    """Display stat allocation screen before starting game"""
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("JPT RPG 3D - Character Creation")
+    clock = pygame.time.Clock()
+    
+    font_huge = pygame.font.SysFont("georgia", 60, bold=True)
+    font_msg = pygame.font.SysFont("georgia", 20, bold=True)
+    font_small = pygame.font.SysFont("georgia", 14, bold=True)
+    
+    stat_allocator = StatAllocator(font_huge, font_msg, font_small, WIDTH, HEIGHT)
+    
+    while True:
+        for e in pygame.event.get():
+            if e.type == pygame.QUIT:
+                sys.exit()
+            elif e.type == pygame.KEYDOWN:
+                if e.key == pygame.K_ESCAPE:
+                    return  # Back to menu
+                elif e.key == pygame.K_c:
+                    # Start game with allocated stats
+                    game = Game(stat_allocator.get_stats())
+                    game.run()
+                    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+            elif e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
+                stat_allocator.handle_click(e.pos)
+        
+        stat_allocator.draw(screen)
+        pygame.display.flip()
+        clock.tick(FPS)
 
 if __name__ == "__main__":
     show_main_menu()
